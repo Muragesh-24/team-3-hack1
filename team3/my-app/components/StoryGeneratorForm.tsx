@@ -1,30 +1,39 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { addStoryDATA, Stories } from "@/utils/stories";
 
 type Story = {
   title: string;
+  snippet: string;
+  href: string;
+  images_videos: string[];
   storyParts: string[];
-  images_video: string[];
 };
 
 export default function StoryGeneratorForm() {
   const [story, setStory] = useState<Story | null>(null);
   const [loading, setLoading] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  let finalAddition: Story;
 
   async function addStory() {
     setLoading(true);
     try {
-      const response = await fetch("http://localhost:5000/api/stories", {
+      // For now just fetch a single story (mock)
+      const response = await fetch("http://localhost:4000/api/stories", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: "A magical forest adventure", // you can grab this from textarea later
-        }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ prompt }),
       });
 
       const data: Story = await response.json();
       setStory(data);
-      console.log("Generated Story:", data);
+      finalAddition = data;
+      addStoryDATA(data);
+      console.log(data);
+      // Add the story to the global Stories array
     } catch (err) {
       console.error("Error generating story:", err);
     } finally {
@@ -39,8 +48,11 @@ export default function StoryGeneratorForm() {
     >
       <textarea
         placeholder="Describe characters or idea..."
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
         className="w-full h-32 p-2 border rounded mb-4"
       />
+
       <button
         onClick={addStory}
         disabled={loading}
