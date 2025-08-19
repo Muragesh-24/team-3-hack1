@@ -23,6 +23,8 @@
         <div class="story" id="story"></div>
     </div>
     <script>
+        let currentSessionId = null;
+
         async function generateStory() {
             const prompt = document.getElementById('prompt').value;
             document.getElementById('story').innerHTML = 'Generating story...';
@@ -36,6 +38,9 @@
                 });
                 const data = await res.json();
                 
+                // Store session ID
+                currentSessionId = data.session_id;
+                
                 // Display the story immediately
                 document.getElementById('story').innerHTML = data.story;
                 
@@ -44,14 +49,14 @@
                 const originalPrompt = data.original_prompt;
                 
                 for (let i = 0; i < dialogueLines.length; i++) {
-                    generateImage(dialogueLines, originalPrompt, i);
+                    generateImage(dialogueLines, originalPrompt, i, currentSessionId);
                 }
             } catch (error) {
                 document.getElementById('story').innerHTML = 'Error generating story: ' + error.message;
             }
         }
 
-        async function generateImage(dialogueLines, originalPrompt, lineIndex) {
+        async function generateImage(dialogueLines, originalPrompt, lineIndex, sessionId) {
             try {
                 const res = await fetch('/generate_images', {
                     method: 'POST',
@@ -59,7 +64,8 @@
                     body: JSON.stringify({ 
                         dialogue_lines: dialogueLines, 
                         original_prompt: originalPrompt, 
-                        line_index: lineIndex 
+                        line_index: lineIndex,
+                        session_id: sessionId
                     })
                 });
                 const data = await res.json();
@@ -80,6 +86,31 @@
                 if (imageDiv) {
                     imageDiv.innerHTML = '<span style="color:#999;">Error loading image</span>';
                 }
+            }
+        }
+
+        async function createVideo(sessionId) {
+            const statusDiv = document.getElementById('video-status');
+            statusDiv.innerHTML = '<span style="color:#007bff;">Creating video...</span>';
+            
+            try {
+                const res = await fetch('/create_video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    statusDiv.innerHTML = `
+                        <span style="color:#28a745;">${data.message}</span><br>
+                        <a href="/download_video/${sessionId}" download style="color:#007bff; text-decoration:underline;">Download Video</a>
+                    `;
+                } else {
+                    statusDiv.innerHTML = `<span style="color:#dc3545;">Error: ${data.error}</span>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<span style="color:#dc3545;">Error creating video: ${error.message}</span>`;
             }
         }
     </script>
