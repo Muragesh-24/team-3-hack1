@@ -9,6 +9,108 @@ import cv2
 import numpy as np
 import uuid
 import json
+import shutil
+from gtts import gTTS
+from moviepy import VideoFileClip, AudioFileClip, concatenate_audioclips
+
+# --- Story Audio Generation Class (Integrated) ---
+class StoryAudioGenerator:
+    """
+    A class to dynamically convert a story text with character tags into a single
+    audio file, assigning different voices to characters as they are discovered.
+    """
+    def __init__(self, output_dir="generated_audio"):
+        self.output_dir = output_dir
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir)
+        self.available_voices = [
+            {"language": "en-us"}, {"language": "en-gb"},
+            {"language": "en-au"}, {"language": "en-in"},
+        ]
+        self.voice_idx = 0
+        self.assigned_voices = {}
+
+    def _get_voice_for_character(self, character_name):
+        if character_name in self.assigned_voices:
+            return self.assigned_voices[character_name]
+        voice_to_assign = self.available_voices[self.voice_idx]
+        self.assigned_voices[character_name] = voice_to_assign
+        self.voice_idx = (self.voice_idx + 1) % len(self.available_voices)
+        print(f"  - New character found: '{character_name}'. Assigning voice: {voice_to_assign['language']}")
+        return voice_to_assign
+
+    def _split_story_by_character(self, text):
+        segments = []
+        lines = text.strip().split('\n')
+        for line in lines:
+            if line.strip() and ':' in line:
+                parts = line.split(':', 1)
+                character = parts[0].strip().strip('[]')
+                dialogue = parts[1].strip()
+                segments.append({"character": character, "text": dialogue})
+        return segments
+
+    def _generate_audio_for_segments(self, segments):
+        audio_clips = []
+        print("\nGenerating audio for each story segment...")
+        for i, segment in enumerate(segments):
+            character = segment["character"]
+            text = segment["text"]
+            voice_config = self._get_voice_for_character(character)
+            lang = voice_config["language"]
+            audio_path = os.path.join(self.output_dir, f"segment_{i:03d}.mp3")
+            try:
+                tts = gTTS(text=text, lang=lang, slow=False)
+                tts.save(audio_path)
+                clip = AudioFileClip(audio_path)
+                audio_clips.append(clip)
+            except Exception as e:
+                print(f"    - Error generating audio for segment {i+1}: {e}")
+        return audio_clips
+
+    def cleanup(self):
+        if os.path.exists(self.output_dir):
+            shutil.rmtree(self.output_dir)
+            print(f"Cleaned up temporary directory: {self.output_dir}")
+
+    def generate_story_audio(self, story_text):
+        print("Starting audio generation process...")
+        self.assigned_voices = {}
+        self.voice_idx = 0
+        story_segments = self._split_story_by_character(story_text)
+        if not story_segments:
+            return None
+        
+        # With moviepy, we don't need to generate separate clips first
+        full_audio_path = os.path.join(self.output_dir, "final_story_audio.mp3")
+        
+        # Create a list of audio file paths
+        segment_paths = []
+        for i, segment in enumerate(story_segments):
+            character = segment["character"]
+            text = segment["text"]
+            voice_config = self._get_voice_for_character(character)
+            lang = voice_config["language"]
+            audio_path = os.path.join(self.output_dir, f"segment_{i:03d}.mp3")
+            try:
+                tts = gTTS(text=text, lang=lang, slow=False)
+                tts.save(audio_path)
+                segment_paths.append(audio_path)
+            except Exception as e:
+                print(f"    - Error generating audio for segment {i+1}: {e}")
+
+        # Concatenate audio files using moviepy
+        if segment_paths:
+            clips = [AudioFileClip(p) for p in segment_paths]
+            final_audio = concatenate_audioclips(clips)
+            final_audio.write_audiofile(full_audio_path, codec="mp3")
+            final_audio.close()
+            for clip in clips:
+                clip.close()
+            return full_audio_path
+        return None
+
+
 app = Flask(__name__)
 API_KEY = "AIzaSyC3rfrN9Z9Dw3-LRh37JAksXLkOUsJBETg"
 client = genai.Client(api_key=API_KEY)
@@ -120,6 +222,17 @@ def create_video():
         return jsonify({'error': 'Invalid session ID'})
     
     session_data = story_sessions[session_id]
+    story_text = session_data['story_text']
+
+    audio_generator = StoryAudioGenerator(output_dir=f"temp_audio_{session_id}")
+    audio_path = audio_generator.generate_story_audio(story_text)
+    
+    if not audio_path or not os.path.exists(audio_path):
+        return jsonify({'error': 'Failed to generate audio for the story.'})
+        
+    # --- Step 2: Create a timed, silent video from images ---
+    video_without_audio_path = f"videos/{session_id}_silent.mp4"
+    final_video_path = f"videos/{session_id}_story_video.mp4"
     
     try:
         # Get all image paths in order
@@ -130,34 +243,50 @@ def create_video():
         
         if not image_paths:
             return jsonify({'error': 'No images available for video creation'})
-        target_size = (512, 512) 
-        resized_images = []
         
+        audio_clip_for_duration = AudioFileClip(audio_path)
+        audio_duration = audio_clip_for_duration.duration
+        audio_clip_for_duration.close()
+        duration_per_image = audio_duration / len(image_paths)
+
+        target_size = (512, 512) 
+        fps = 24 
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(video_without_audio_path, fourcc, fps, target_size)
+
+        resized_images = []
+        frames_per_image = int(duration_per_image * fps)
+
         for img_path in image_paths:
             img = cv2.imread(img_path)
             if img is not None:
                 img_resized = cv2.resize(img, target_size)
                 resized_images.append(img_resized)
+                for _ in range(frames_per_image):
+                    video_writer.write(img_resized)
+        video_writer.release()
         
         if not resized_images:
             return jsonify({'error': 'Failed to process images'})
 
         video_filename = f"videos/{session_id}_story_video.mp4"
         
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = 1 
-        video_writer = cv2.VideoWriter(video_filename, fourcc, fps, target_size)
+        video_clip = VideoFileClip(video_without_audio_path)
+        audio_clip = AudioFileClip(audio_path)
         
-        for img in resized_images:
-
-            video_writer.write(img)
+        final_clip = video_clip.set_audio(audio_clip)
+        final_clip.write_videofile(final_video_path, codec='libx264', audio_codec='aac')
         
-        video_writer.release()
-        
+        final_clip.close()
+        video_clip.close()
+        audio_clip.close()
+        audio_generator.cleanup()
+        if os.path.exists(video_without_audio_path):
+            os.remove(video_without_audio_path)
         return jsonify({
             'success': True, 
-            'video_path': video_filename,
-            'message': f'Video created successfully with {len(resized_images)} images'
+            'video_path': final_video_path,
+            'message': f'Video created successfully with {len(resized_images)} images and audio'
         })
         
     except Exception as e:
@@ -171,6 +300,9 @@ def download_video(session_id):
         return send_file(video_filename, as_attachment=True, download_name=f"story_{session_id}.mp4")
     else:
         return jsonify({'error': 'Video not found'}), 404
+
+
+
 
 if __name__ == '__main__':
     app.run(debug=True)
